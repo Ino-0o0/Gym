@@ -1,0 +1,283 @@
+/* ============================================================
+   admin.js — Admin dashboard behaviour
+   ============================================================ */
+
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadDB();
+  initNav();
+  injectPulse(document.getElementById('pulse-holder'));
+
+  populateSelects();
+  renderOverview();
+  renderRequests();
+  renderMembers();
+  renderTrainers();
+  renderPlans();
+  renderPayments();
+  renderEquipment();
+  renderReports();
+
+  document.getElementById('form-member').addEventListener('submit', onAddMember);
+  document.getElementById('form-trainer').addEventListener('submit', onAddTrainer);
+  document.getElementById('form-plan').addEventListener('submit', onAddPlan);
+  document.getElementById('form-payment').addEventListener('submit', onAddPayment);
+  document.getElementById('form-equipment').addEventListener('submit', onAddEquipment);
+});
+
+/* ---------- populate <select> dropdowns ---------- */
+function populateSelects() {
+  const planSel = document.getElementById('m-plan');
+  DB.plans.forEach(p => planSel.add(new Option(`${p.name} (${fmtMoney(p.price)})`, p.id)));
+
+  const trainerSel = document.getElementById('m-trainer');
+  DB.trainers.forEach(t => trainerSel.add(new Option(t.name, t.id)));
+
+  const paySel = document.getElementById('pay-member');
+  DB.members.forEach(m => paySel.add(new Option(m.name, m.id)));
+
+  document.getElementById('pay-date').valueAsDate = new Date();
+}
+
+async function refreshAll() {
+  await loadDB();
+  populateSelectsRefresh();
+  renderOverview();
+  renderRequests();
+  renderMembers();
+  renderTrainers();
+  renderPlans();
+  renderPayments();
+  renderEquipment();
+  renderReports();
+}
+
+function populateSelectsRefresh() {
+  const trainerSel = document.getElementById('m-trainer');
+  trainerSel.innerHTML = '';
+  DB.trainers.forEach(t => trainerSel.add(new Option(t.name, t.id)));
+
+  const paySel = document.getElementById('pay-member');
+  paySel.innerHTML = '';
+  DB.members.forEach(m => paySel.add(new Option(m.name, m.id)));
+}
+
+/* ---------- REGISTRATION REQUESTS ---------- */
+function renderRequests() {
+  const badge = document.getElementById('req-count');
+  badge.textContent = DB.requests.length;
+  badge.style.display = DB.requests.length ? 'inline-block' : 'none';
+
+  const planOpts = DB.plans.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  const trainerOpts = DB.trainers.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+
+  renderTable(document.getElementById('tbl-requests'), DB.requests.map(r => [
+    r.name, r.role, r.email, r.phone || '—',
+    r.role === 'Trainer'
+      ? (r.specialization || '—')
+      : `<select id="rq-plan-${r.id}"><option value="">Plan…</option>${planOpts}</select>
+         <select id="rq-trainer-${r.id}" style="margin-top:6px"><option value="">Trainer…</option>${trainerOpts}</select>`,
+    r.date,
+    `<button class="btn small" onclick="approveRequest(${r.id}, '${r.role}')">Approve</button>
+     <button class="btn small danger" onclick="rejectRequest(${r.id})">Reject</button>`,
+  ]), 7, 'No pending registrations');
+}
+
+async function approveRequest(id, role) {
+  const body = {};
+  if (role === 'Member') {
+    const planEl = document.getElementById(`rq-plan-${id}`);
+    const trainerEl = document.getElementById(`rq-trainer-${id}`);
+    
+    // ADD THESE TWO LINES:
+    console.log('planEl:', planEl, 'value:', planEl?.value);
+    console.log('trainerEl:', trainerEl, 'value:', trainerEl?.value);
+
+    body.planId = planEl?.value;
+    body.trainerId = trainerEl?.value;
+    if (!body.planId || !body.trainerId) { alert('Pick a plan and a trainer first.'); return; }
+  }
+  try {
+    await api(`/requests/${id}/approve`, body);
+    await refreshAll();
+  } catch (err) { alert(err.message); }
+}
+
+async function rejectRequest(id) {
+  if (confirm('Reject this registration?')) {
+    try {
+      await api(`/requests/${id}/reject`, {});
+      await refreshAll();
+    } catch (err) { alert(err.message); }
+  }
+}
+
+/* ---------- OVERVIEW ---------- */
+function renderOverview() {
+  const activeMembers = DB.members.filter(m => m.status === 'Active').length;
+  const ym = new Date().toISOString().slice(0, 7);
+  const monthlyRevenue = DB.payments
+    .filter(p => p.status === 'Paid' && p.date.startsWith(ym))
+    .reduce((sum, p) => sum + p.amount, 0);
+  const maintenanceCount = DB.equipment.filter(e => e.status === 'Maintenance').length;
+
+  document.getElementById('stat-grid').innerHTML = `
+    <div class="stat-card"><div class="label">Total members</div><div class="value">${DB.members.length}</div></div>
+    <div class="stat-card"><div class="label">Active members</div><div class="value accent">${activeMembers}</div></div>
+    <div class="stat-card"><div class="label">Trainers on staff</div><div class="value">${DB.trainers.length}</div></div>
+    <div class="stat-card"><div class="label">Revenue this month</div><div class="value">${fmtMoney(monthlyRevenue)}</div></div>
+    <div class="stat-card"><div class="label">Equipment needing service</div><div class="value ${maintenanceCount ? 'warn' : ''}">${maintenanceCount}</div></div>
+  `;
+
+  const recent = [...DB.members].sort((a, b) => b.joinDate.localeCompare(a.joinDate)).slice(0, 5);
+  renderTable(document.getElementById('tbl-recent-members'), recent.map(m => [
+    m.name,
+    findPlan(m.planId)?.name || '—',
+    findTrainer(m.trainerId)?.name || '—',
+    m.joinDate,
+    statusBadge(m.status),
+  ]), 5);
+}
+
+/* ---------- MEMBERS ---------- */
+function renderMembers() {
+  renderTable(document.getElementById('tbl-members'), DB.members.map(m => [
+    m.name, m.email,
+    findPlan(m.planId)?.name || '—',
+    findTrainer(m.trainerId)?.name || '—',
+    m.joinDate,
+    statusBadge(m.status),
+  ]), 6);
+}
+
+async function onAddMember(e) {
+  e.preventDefault();
+  try {
+    await api('/members', {
+      name: document.getElementById('m-name').value.trim(),
+      email: document.getElementById('m-email').value.trim(),
+      phone: document.getElementById('m-phone').value.trim(),
+      planId: document.getElementById('m-plan').value,
+      trainerId: document.getElementById('m-trainer').value,
+    });
+    e.target.reset();
+    await refreshAll();
+  } catch (err) { alert(err.message); }
+}
+
+/* ---------- TRAINERS ---------- */
+function renderTrainers() {
+  renderTable(document.getElementById('tbl-trainers'), DB.trainers.map(t => [
+    t.name, t.specialization, t.phone, t.email,
+    DB.members.filter(m => m.trainerId === t.id).length,
+  ]), 5);
+}
+
+async function onAddTrainer(e) {
+  e.preventDefault();
+  try {
+    await api('/trainers', {
+      name: document.getElementById('t-name').value.trim(),
+      specialization: document.getElementById('t-spec').value.trim(),
+      phone: document.getElementById('t-phone').value.trim(),
+      email: document.getElementById('t-email').value.trim(),
+    });
+    e.target.reset();
+    await refreshAll();
+  } catch (err) { alert(err.message); }
+}
+
+/* ---------- PLANS ---------- */
+function renderPlans() {
+  renderTable(document.getElementById('tbl-plans'), DB.plans.map(p => [
+    p.name, `${p.durationMonths} mo`, fmtMoney(p.price),
+    DB.members.filter(m => m.planId === p.id && m.status === 'Active').length,
+  ]), 4);
+}
+
+async function onAddPlan(e) {
+  e.preventDefault();
+  try {
+    await api('/plans', {
+      name: document.getElementById('p-name').value.trim(),
+      durationMonths: Number(document.getElementById('p-duration').value),
+      price: Number(document.getElementById('p-price').value),
+    });
+    e.target.reset();
+    await refreshAll();
+  } catch (err) { alert(err.message); }
+}
+
+/* ---------- PAYMENTS ---------- */
+function renderPayments() {
+  const sorted = [...DB.payments].sort((a, b) => b.date.localeCompare(a.date));
+  renderTable(document.getElementById('tbl-payments'), sorted.map(p => [
+    findMember(p.memberId)?.name || '—',
+    fmtMoney(p.amount), p.method, p.date, statusBadge(p.status),
+  ]), 5);
+}
+
+async function onAddPayment(e) {
+  e.preventDefault();
+  try {
+    await api('/payments', {
+      memberId: document.getElementById('pay-member').value,
+      amount: Number(document.getElementById('pay-amount').value),
+      method: document.getElementById('pay-method').value,
+      date: document.getElementById('pay-date').value,
+    });
+    e.target.reset();
+    document.getElementById('pay-date').valueAsDate = new Date();
+    await refreshAll();
+  } catch (err) { alert(err.message); }
+}
+
+/* ---------- EQUIPMENT ---------- */
+function renderEquipment() {
+  renderTable(document.getElementById('tbl-equipment'), DB.equipment.map(eq => [
+    eq.name, eq.category, eq.quantity, statusBadge(eq.status), eq.lastService,
+    eq.status === 'Working'
+      ? `<button class="btn small danger" onclick="toggleEquipment('${eq.id}')">Flag for service</button>`
+      : `<button class="btn small secondary" onclick="toggleEquipment('${eq.id}')">Mark fixed</button>`,
+  ]), 6);
+}
+
+async function toggleEquipment(id) {
+  try {
+    await api(`/equipment/${id}/toggle`, {});
+    await refreshAll();
+  } catch (err) { alert(err.message); }
+}
+
+async function onAddEquipment(e) {
+  e.preventDefault();
+  try {
+    await api('/equipment', {
+      name: document.getElementById('eq-name').value.trim(),
+      category: document.getElementById('eq-category').value,
+      quantity: Number(document.getElementById('eq-qty').value),
+    });
+    e.target.reset();
+    await refreshAll();
+  } catch (err) { alert(err.message); }
+}
+
+/* ---------- REPORTS ---------- */
+function renderReports() {
+  renderTable(document.getElementById('tbl-report-plans'), DB.plans.map(p => {
+    const onPlan = DB.members.filter(m => m.planId === p.id);
+    const revenue = DB.payments
+      .filter(pay => pay.status === 'Paid' && onPlan.some(m => m.id === pay.memberId))
+      .reduce((s, pay) => s + pay.amount, 0);
+    return [p.name, onPlan.length, fmtMoney(revenue)];
+  }), 3);
+
+  const byDate = {};
+  DB.attendance.forEach(a => { byDate[a.date] = (byDate[a.date] || 0) + 1; });
+  const dateRows = Object.entries(byDate).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 7);
+  renderTable(document.getElementById('tbl-report-attendance'), dateRows.map(([d, c]) => [d, c]), 2);
+
+  const pending = DB.payments.filter(p => p.status === 'Pending');
+  renderTable(document.getElementById('tbl-report-pending'), pending.map(p => [
+    findMember(p.memberId)?.name || '—', fmtMoney(p.amount), p.date,
+  ]), 3, 'No pending payments');
+}
